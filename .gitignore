@@ -1,0 +1,23 @@
+# 构建产物
+build/
+out/
+bin/
+*.o
+*.obj
+*.exe
+*.ilk
+*.pdb
+*.dll
+*.lib
+*.so
+*.a
+
+# IDE
+.vs/
+.vscode/
+.idea/
+CMakeUserPresets.json
+
+# 系统
+.DS_Store
+Thumbs.db
