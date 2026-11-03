@@ -17,7 +17,7 @@ src/           当前实现（v2 起拆成多文件）
   order_book.h/.cpp 撮合与盘口
   main.cpp          演示程序
 CMakeLists.txt 构建脚本（核心库 + 演示程序）
-tests/         单元测试（待建）
+tests/         随机对拍（与朴素参考实现比对，冻住行为）
 bench/         延迟与吞吐测量（待建）
 docs/review.md 逐条问题分析与修复记录（待建）
 ```
@@ -31,6 +31,20 @@ cmake --build build
 ```
 
 Windows 上也可以直接用 Visual Studio 打开这个目录（VS 2019+ 原生支持 CMake）。
+
+跑测试：
+
+```
+ctest --test-dir build --output-on-failure
+```
+
+## 测试为什么这么写
+
+`tests/test_parity.cpp` 是随机对拍：一边跑本仓库的实现，一边跑一份故意写得很笨的参考实现
+（`vector` 存全部订单，每次撮合重新扫一遍找最优价），每一步比对盘口是否一致。
+
+它不判断「什么是对的」，它做的是**把当前行为冻住**——重构之后输出必须一字不差，
+否则说明行为被无意改动了。这份安全网是后面换数据结构的前提。
 
 ## v0 的问题清单
 

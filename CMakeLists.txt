@@ -25,5 +25,12 @@ else()
     target_compile_options(order_book PRIVATE -Wall -Wextra)
 endif()
 
-# 测试（v4 接 ctest）
+# 测试
 enable_testing()
+
+# 随机对拍：把当前实现的行为与一份朴素参考实现逐档比对。
+# 重构期间它是安全网——输出必须与重构前一致。
+add_executable(test_parity tests/test_parity.cpp)
+target_link_libraries(test_parity PRIVATE ob_core)
+add_test(NAME parity_default COMMAND test_parity 500 20261103)
+add_test(NAME parity_seed7   COMMAND test_parity 2000 7)
