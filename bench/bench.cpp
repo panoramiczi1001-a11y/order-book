@@ -59,6 +59,14 @@ struct Report {
 
     void add(std::uint64_t ns) { samples.push_back(ns); }
 
+    void dump(const char* path, const char* label) const {
+        if (!path) return;
+        FILE* f = std::fopen(path, "a");
+        if (!f) return;
+        for (auto v : samples) std::fprintf(f, "%s,%llu\n", label, static_cast<unsigned long long>(v));
+        std::fclose(f);
+    }
+
     void print(const char* label) const {
         if (samples.empty()) {
             std::printf("%-28s (no samples)\n", label);
@@ -86,6 +94,7 @@ int main(int argc, char** argv) {
     const std::string mode = argc > 1 ? argv[1] : "mixed";
     const int ops = argc > 2 ? std::atoi(argv[2]) : 200000;
     const unsigned seed = argc > 3 ? static_cast<unsigned>(std::atoi(argv[3])) : 42u;
+    const char* dumpPath = argc > 4 ? argv[4] : nullptr;   // 可选：把逐笔样本写到 CSV
 
     std::mt19937 rng(seed);
     std::uniform_int_distribution<int>  priceOff(-50, 50);   // ±0.0050 元
@@ -168,6 +177,10 @@ int main(int argc, char** argv) {
     }
 
     std::printf("live_orders=%zu\n", live.size());
+    ins.dump(dumpPath, "insert");
+    canc.dump(dumpPath, "cancel");
+    mat.dump(dumpPath, "match");
+    if (dumpPath) std::printf("samples -> %s\n", dumpPath);
     if (!ins.samples.empty())  ins.print("insert");
     if (!canc.samples.empty()) canc.print("cancel");
     if (!mat.samples.empty())  mat.print("cross+match");

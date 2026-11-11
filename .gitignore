@@ -21,3 +21,6 @@ CMakeUserPresets.json
 # 系统
 .DS_Store
 Thumbs.db
+
+# 基准输出
+samples*.csv

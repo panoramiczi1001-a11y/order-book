@@ -99,6 +99,8 @@ cmake -B build && cmake --build build
 ./build/order_book_bench throughput 500000
 ```
 
+![延迟基准](bench/latency.png)
+
 x86-64 / Intel Core Ultra X9 388H（Linux VM, 2 vCPU）/ g++ -O2 / 单位 ns：
 
 | 场景 | p50 | p90 | p99 | p999 | mean |
@@ -113,6 +115,28 @@ x86-64 / Intel Core Ultra X9 388H（Linux VM, 2 vCPU）/ g++ -O2 / 单位 ns：
 1. **均值远高于 p50**（insert 166 vs 85）。尾部把均值拉走了，所以只报平均值的基准会误导人。
 2. **撤单比下单慢**（230 vs 85）。撤单要查哈希、摘链表节点、可能还要删整个价位、同时写入 `retired_`。
 3. **撮合贵一个量级**（860 ns）。它是「插单 + 撮合循环」的合计，且每轮撮合可能产生多笔成交。
+
+### 图里能看到、表里看不到的东西
+
+**insert 是双峰的。** 右图蓝色曲线在约 90 ns 有一个主峰，在约 1 µs 还有第二个峰。
+这说明放单存在两条明显不同的路径——大部分落在「价位已存在」的快路径，少数落在
+「新建价位」的慢路径（map 插入 + 红黑树旋转）。单看 p50=85、p99=1101 这两个数字，
+只会觉得「尾部有点慢」，看不到它其实是**两个不同的操作被混在一起统计**。
+
+这是本次唯一一个「只有画图才能发现」的结论。要证实它，下一步应当把 insert 拆成
+「新价位 / 已有价位」两条计时分别统计——如果双峰消失，假设成立。
+
+### 重新生成
+
+```bash
+./build/order_book_bench insert 100000 42 samples.csv
+./build/order_book_bench cancel 100000 42 samples.csv
+./build/order_book_bench mixed  100000 42 samples.csv
+python bench/plot.py samples.csv bench/latency.png
+```
+
+左图是累积分布（回答「多少比例在 X ns 内完成」），右图是直方图（回答「尾部是断崖还是长坡」）。
+两个图放在一起，是因为分位数只给点，直方图给形状。
 
 后续每次改数据结构，都拿这张表对比，重点看 **p99 与 p999**，而不是均值。
 
