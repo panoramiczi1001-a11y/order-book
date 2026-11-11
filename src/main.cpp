@@ -1,54 +1,51 @@
-// main.cpp —— 演示程序：随机造单，跑 50 轮
-//
-// 每轮固定生成一买一卖：价格 95~105 的整数，数量 10~100。
-// 覆盖面很窄：
-//   - 价格永远是整数，测不出 double 键的问题
-//   - 每轮必有一买一卖，只撮合一次
-//   - cancelOrder() 从头到尾没被调用过
-// TODO(v3): 这份 demo 应该退出 src/，换成 tests/ 下的固定序列用例。
+// main.cpp —— 演示：两个标的、随机下单、撮合、打印成交与盘口
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
 
-#include "order_book.h"
+#include "exchange.h"
+
+using namespace ob;
 
 int main() {
-    // TODO(v3): rand() + time 种子结果不可复现，应固定种子或写死序列。
     std::srand(static_cast<unsigned>(std::time(nullptr)));
-    OrderBook book;
 
-    int nextOrderId = 1;
+    Exchange ex;
+    OrderId nextId = 1;
 
-    for (int round = 1; round <= 50; ++round)
-    {
-        std::cout << "Round " << round << std::endl;
+    const char* symbols[] = {"600000", "000001"};
 
-        int buyId = nextOrderId++;
-        double buyPrice = 95.0 + (std::rand() % 11);
-        int buyQty = 10 + (std::rand() % 91);
-        Order buyOrder(buyId, "A", buyPrice, 'B', buyQty);
+    for (int round = 1; round <= 20; ++round) {
+        std::cout << "=== Round " << round << " ===\n";
 
-        int sellId = nextOrderId++;
-        double sellPrice = 95.0 + (std::rand() % 11);
-        int sellQty = 10 + (std::rand() % 91);
-        Order sellOrder(sellId, "A", sellPrice, 'S', sellQty);
+        for (const char* sym : symbols) {
+            // 两个标的价格区间不同，若串账会立刻看出成交价异常
+            const double base = (sym[0] == '6') ? 100.0 : 20.0;
 
-        std::cout << "Generated Buy id=" << buyId
-                  << " price=" << buyPrice
-                  << " qty=" << buyQty << std::endl;
+            const OrderId buyId = nextId++;
+            const double buyPrice = base + (std::rand() % 5) * 0.01;
+            const Qty buyQty = 10 + std::rand() % 90;
+            ex.insertOrder(Order(buyId, sym, buyPrice, 'B', buyQty));
 
-        std::cout << "Generated Sell id=" << sellId
-                  << " price=" << sellPrice
-                  << " qty=" << sellQty << std::endl;
+            const OrderId sellId = nextId++;
+            const double sellPrice = base + (std::rand() % 5) * 0.01;
+            const Qty sellQty = 10 + std::rand() % 90;
+            ex.insertOrder(Order(sellId, sym, sellPrice, 'S', sellQty));
 
-        book.insertOrder(buyOrder);
-        book.insertOrder(sellOrder);
+            const auto trades = ex.matchOrders(sym);
+            for (const Trade& t : trades) {
+                std::cout << "  [" << sym << "] trade " << t.qty << " @ "
+                          << to_price(t.price) << "  bid#" << t.bidId
+                          << " ask#" << t.askId << "\n";
+            }
+        }
+    }
 
-        bool matched = book.matchOrders();
-        std::cout << "Matched this round: " << std::boolalpha << matched << std::endl;
-
-        book.displayTop();
-        std::cout << std::endl;
+    std::cout << "\n--- 收盘盘口 ---\n";
+    for (const char* sym : symbols) {
+        const OrderBook* b = ex.book(sym);
+        std::cout << "[" << sym << "]\n";
+        if (b) b->displayTop();
     }
 
     return 0;

@@ -3,151 +3,119 @@
 #include <algorithm>
 #include <iostream>
 
-// ---------------------------------------------------------------------------
-// 下单
-// ---------------------------------------------------------------------------
-void OrderBook::insertOrder(const Order& order)
-{
-    // 五行校验，任何一条不过就静默丢弃。
-    // TODO(v3): 静默 return 导致外部无法知道单子为什么没进去，
-    //           应返回错误码或布尔值。注意 NaN 能绕过 price <= 0。
-    if (order.getOrderId() <= 0) return;
-    if (order.getPrice() <= 0) return;
-    if (order.getRemaining() <= 0) return;
-    if (order.getDir() != 'B' && order.getDir() != 'S') return;
-    // TODO(v3): count() 之后再 insert() 是两次哈希查找，改用 insert 的返回值。
-    if (orderMap.count(order.getOrderId())) return;
+namespace ob {
 
-    // TODO(v3): 这里是整份拷贝，含 std::string symbol，应 move。
-    orderMap.insert({order.getOrderId(), order});
-    if (order.getDir() == 'B') {
-        buyOrders[order.getPrice()].push_back(order);
-    }
-    else if (order.getDir() == 'S') {
-        sellOrders[order.getPrice()].push_back(order);
-    }
+OrderBook::OrderBook(std::string symbol) : symbol_(std::move(symbol)) {}
+
+OrderBook::Node& OrderBook::levelOrCreate(Side side, Price price) {
+    if (side == Side::Buy) return bids_[price];
+    return asks_[price];
 }
 
-// ---------------------------------------------------------------------------
-// 撤单
-// ---------------------------------------------------------------------------
-void OrderBook::cancelOrder(int orderId)
-{
-    auto it = orderMap.find(orderId);
-    if (it == orderMap.end()) return;
+InsertResult OrderBook::insertOrder(const Order& order) {
+    if (order.id() <= 0) return InsertResult::BadId;
+    if (order.price() <= 0) return InsertResult::BadPrice;   // NaN 在 to_ticks 里已变成 0
+    if (order.remaining() <= 0) return InsertResult::BadQty;
+    if (order.side() != Side::Buy && order.side() != Side::Sell) return InsertResult::BadSide;
 
-    Order& order = it->second;
-    // TODO(v3): 两个分支除容器外完全一样，可合成一个 helper；
-    //           且这里的线性扫描是 O(n)，应存迭代器做到 O(1)。
-    if (order.getDir() == 'B')
-    {
-        // TODO(v3): 用 operator[] 会在键不存在时凭空插入空档位，应改用 find()。
-        auto& level = buyOrders[order.getPrice()];
-        for (auto jt = level.begin(); jt != level.end(); ++jt) {
-            if (jt->getOrderId() == orderId) {
-                level.erase(jt);
-                break;
-            }
-        }
-    }
-    else if (order.getDir() == 'S')
-    {
-        auto& level = sellOrders[order.getPrice()];
-        for (auto jt = level.begin(); jt != level.end(); ++jt) {
-            if (jt->getOrderId() == orderId) {
-                level.erase(jt);
-                break;
-            }
-        }
+    // 订单号终身唯一：既不能和在场订单重复，也不能用已经成交/撤销掉的老号
+    if (index_.count(order.id()) || retired_.count(order.id())) {
+        return InsertResult::DuplicateId;
     }
 
-    // 价位空了就把整档删掉，否则盘口会打出空档、撮合也会看到空队首。
-    if (order.getDir() == 'B' && buyOrders[order.getPrice()].empty())
-    {
-        buyOrders.erase(order.getPrice());
-    }
-    else if (order.getDir() == 'S' && sellOrders[order.getPrice()].empty())
-    {
-        sellOrders.erase(order.getPrice());
-    }
-    orderMap.erase(it);
+    Order o = order;
+    o.setSeq(seqCounter_++);            // 到达序号，用于时间优先与成交价判定
+
+    Node& level = levelOrCreate(o.side(), o.price());
+    level.push_back(std::move(o));
+    auto nodeIt = std::prev(level.end());
+
+    index_[nodeIt->id()] = Handle{nodeIt->price(), nodeIt};
+    return InsertResult::Ok;
 }
 
-// ---------------------------------------------------------------------------
-// 撮合
-// ---------------------------------------------------------------------------
-bool OrderBook::matchOrders()
-{
-    bool matched = false;
-    while (!buyOrders.empty() && !sellOrders.empty()) {
-        double bestBuyPrice = buyOrders.begin()->first;
-        double bestSellPrice = sellOrders.begin()->first;
+bool OrderBook::cancelOrder(OrderId id) {
+    auto it = index_.find(id);
+    if (it == index_.end()) return false;
 
-        // 买价低于卖价，没有交叉，收工。
-        if (bestBuyPrice < bestSellPrice) {
-            break;
-        }
+    // 句柄里存的是价位与链表节点；摘除时用节点迭代器，O(1)
+    const Handle h = it->second;
+    const Side side = (*h.node).side();
 
-        // 两个引用指向 deque 内部元素，后面 pop_front 之后会失效。
-        // 当前靠语句顺序侥幸没用到失效的引用。
-        // TODO(v3): 先取 orderId 和剩余量再操作，别持有引用跨过 pop。
-        Order& buyOrder = buyOrders.begin()->second.front();
-        Order& sellOrder = sellOrders.begin()->second.front();
-        int quantity = std::min(buyOrder.getRemaining(), sellOrder.getRemaining());
-        buyOrder.setFilledQuantity(buyOrder.getFilledQuantity() + quantity);
-        sellOrder.setFilledQuantity(sellOrder.getFilledQuantity() + quantity);
-
-        // 改了 deque 里那两份拷贝，必须写回索引那份，否则三处状态分裂。
-        // TODO(v3): 单一数据源之后这两行就该消失。
-        orderMap.insert_or_assign(buyOrder.getOrderId(), buyOrder);
-        orderMap.insert_or_assign(sellOrder.getOrderId(), sellOrder);
-        matched = true;
-
-        if (buyOrder.isFilled()) {
-            int buyId = buyOrder.getOrderId();
-            buyOrders.begin()->second.pop_front();
-            orderMap.erase(buyId);
-            if (buyOrders.begin()->second.empty()) {
-                buyOrders.erase(buyOrders.begin());
-            }
-        }
-
-        if (sellOrder.isFilled()) {
-            int sellId = sellOrder.getOrderId();
-            sellOrders.begin()->second.pop_front();
-            orderMap.erase(sellId);
-            if (sellOrders.begin()->second.empty()) {
-                sellOrders.erase(sellOrders.begin());
-            }
-        }
+    if (side == Side::Buy) {
+        auto levelIt = bids_.find(h.price);
+        levelIt->second.erase(h.node);
+        if (levelIt->second.empty()) bids_.erase(levelIt);
+    } else {
+        auto levelIt = asks_.find(h.price);
+        levelIt->second.erase(h.node);
+        if (levelIt->second.empty()) asks_.erase(levelIt);
     }
-    return matched;
+
+    index_.erase(it);
+    retired_.insert(id);      // 用过的号永久保留，防止迟到撤单误伤新单
+    return true;
 }
 
-// ---------------------------------------------------------------------------
-// 盘口
-// ---------------------------------------------------------------------------
-void OrderBook::displayTop() const
-{
+std::vector<Trade> OrderBook::matchOrders() {
+    std::vector<Trade> trades;
+
+    while (!bids_.empty() && !asks_.empty()) {
+        auto bidLevelIt = bids_.begin();
+        auto askLevelIt = asks_.begin();
+
+        if (bidLevelIt->first < askLevelIt->first) break;   // 买价低于卖价，无交叉
+
+        Order& bid = bidLevelIt->second.front();
+        Order& ask = askLevelIt->second.front();
+
+        const Qty qty = std::min(bid.remaining(), ask.remaining());
+
+        // 成交价取先到的一方（maker）。序号小的先到。
+        const bool bidIsMaker = bid.seq() < ask.seq();
+        const Price px = bidIsMaker ? bid.price() : ask.price();
+
+        bid.fill(qty);
+        ask.fill(qty);
+        trades.push_back(Trade{bid.id(), ask.id(), px, qty, bidIsMaker ? bid.seq() : ask.seq()});
+
+        // 成交后可能要从簿子里摘掉，摘之前先把 id 记下来
+        const OrderId bidId = bid.id();
+        const OrderId askId = ask.id();
+        const bool bidDone = bid.isFilled();
+        const bool askDone = ask.isFilled();
+
+        if (bidDone) cancelOrder(bidId);
+        if (askDone) cancelOrder(askId);
+    }
+
+    return trades;
+}
+
+void OrderBook::displayTop() const {
     std::cout << "Top five buy orders:" << std::endl;
-    int count = 0;
-    // TODO(v4): 每次打印都遍历整档求和，应增量维护每档总量。
-    for (auto it = buyOrders.begin(); it != buyOrders.end() && count < 5; ++it, ++count) {
-        int totalQty = 0;
-        for (const auto& order : it->second) {
-            totalQty += order.getRemaining();
-        }
-        std::cout << "Price: " << it->first << "  Qty: " << totalQty << std::endl;
+    int n = 0;
+    for (auto it = bids_.begin(); it != bids_.end() && n < 5; ++it, ++n) {
+        Qty total = 0;
+        for (const auto& o : it->second) total += o.remaining();
+        std::cout << "Price: " << to_price(it->first) << "  Qty: " << total << std::endl;
     }
 
     std::cout << "Top five sell orders:" << std::endl;
-    count = 0;
-    for (auto it = sellOrders.begin(); it != sellOrders.end() && count < 5; ++it, ++count) {
-        int totalQty = 0;
-        for (const auto& order : it->second) {
-            totalQty += order.getRemaining();
-        }
-        std::cout << "Price: " << it->first << "  Qty: " << totalQty << std::endl;
+    n = 0;
+    for (auto it = asks_.begin(); it != asks_.end() && n < 5; ++it, ++n) {
+        Qty total = 0;
+        for (const auto& o : it->second) total += o.remaining();
+        std::cout << "Price: " << to_price(it->first) << "  Qty: " << total << std::endl;
     }
-    // TODO(v3): 没有成交记录输出，外部无法核对撮合结果。
 }
+
+Price OrderBook::bestBid() const {
+    return bids_.empty() ? 0 : bids_.begin()->first;
+}
+
+Price OrderBook::bestAsk() const {
+    return asks_.empty() ? 0 : asks_.begin()->first;
+}
+
+}  // namespace ob

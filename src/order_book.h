@@ -1,42 +1,62 @@
-// order_book.h —— 限价订单簿
+// order_book.h —— 单标的限价订单簿（v3）
 //
-// 数据结构是三份，这是当前最大的结构问题：
-//      buyOrders   价格 -> 该价位所有买单（按到达顺序排队，先到先撮）
-//      sellOrders  价格 -> 该价位所有卖单
-//      orderMap    订单号 -> 订单（用于按 id 定位）
-//
-// 同一笔订单被存了三份拷贝，撮合时改了 deque 里那份，必须手动
-// insert_or_assign 回 orderMap 才不至于分裂。
-// TODO(v3): 收成一份——orderMap 里存指向簿子节点的句柄，簿子才是唯一真相。
+// v3 的三个结构性改变：
+//   1. 价格用整数 tick，不再用 double 做 map 的键
+//   2. 订单只存在一处（价位链表节点），index_ 里存的是指向它的两个迭代器
+//   3. 撮合产出 Trade 列表，外部可以核对成交
 #pragma once
 
-#include <deque>
+#include <functional>
+#include <list>
 #include <map>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "order.h"
 
+namespace ob {
+
 class OrderBook {
 public:
-    // 下单：校验后写入两个索引。这里只入簿，不撮合，
-    // 撮合由调用方显式调用 matchOrders()。
-    void insertOrder(const Order& order);
+    explicit OrderBook(std::string symbol);
 
-    // 撤单：按 id 找到订单，再去对应价位队列里线性扫掉。
-    void cancelOrder(int orderId);
+    // 下单：返回结果而不再静默丢弃。同一 id 终身只能出现一次。
+    InsertResult insertOrder(const Order& order);
 
-    // 撮合：价格优先 + 时间优先，可成交则循环到不能成交为止。
-    bool matchOrders();
+    // 撤单：O(1)，靠 index_ 里的迭代器直接摘节点。找不到返回 false。
+    bool cancelOrder(OrderId id);
 
-    // 打印买卖各前五档（价格 + 该档剩余量合计）。
+    // 撮合到不能再撮为止，返回本轮产生的成交。
+    std::vector<Trade> matchOrders();
+
+    // 盘口前五档（价格按 tick 换算回 double 打印）。
     void displayTop() const;
 
+    Price bestBid() const;          // 无买单时返回 0
+    Price bestAsk() const;          // 无卖单时返回 0
+    std::size_t liveOrders() const { return index_.size(); }
+    const std::string& symbol() const { return symbol_; }
+
 private:
-    // 买盘：价格降序，begin() 是最高买价。
-    // 卖盘：价格升序，begin() 是最低价。
-    // TODO(v3): 键是 double，见 order.h 里的说明。
-    std::map<double, std::deque<Order>, std::greater<double>> buyOrders;
-    std::map<double, std::deque<Order>, std::less<double>> sellOrders;
-    // 全量索引：订单号 -> 订单副本（第三份数据）。
-    std::unordered_map<int, Order> orderMap;
+    using Node = std::list<Order>;                 // 一个价位上的所有订单，按到达顺序
+
+    // 价位迭代器随 map 增删其他键而保持有效；节点迭代器随 list 增删其他节点而保持有效。
+    // 这两个性质是「单一数据源」能成立的前提。
+    struct Handle {
+        Price price;
+        Node::iterator node;
+    };
+
+    Node& levelOrCreate(Side side, Price price);
+
+    std::string symbol_;
+    std::map<Price, Node, std::greater<Price>> bids_;   // 买盘，begin() 是最高价
+    std::map<Price, Node, std::less<Price>>    asks_;   // 卖盘，begin() 是最低价
+    std::unordered_map<OrderId, Handle> index_;         // 订单号 -> 句柄
+    std::unordered_set<OrderId> retired_;               // 用过的订单号，永不复用
+    Seq seqCounter_ = 0;
 };
+
+}  // namespace ob

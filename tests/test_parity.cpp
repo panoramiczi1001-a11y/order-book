@@ -20,6 +20,8 @@
 
 #include "order_book.h"
 
+using namespace ob;
+
 namespace {
 
 // ---------------------------------------------------------------- 参考实现
@@ -147,7 +149,7 @@ int main(int argc, char** argv)
     std::uniform_int_distribution<int> qtyDist(1, 100);
     std::uniform_int_distribution<int> opDist(0, 99);
 
-    OrderBook impl;
+    OrderBook impl("A");
     RefBook ref;
     int nextId = 1;
     int checked = 0;
