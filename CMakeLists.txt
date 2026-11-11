@@ -26,6 +26,10 @@ else()
     target_compile_options(order_book PRIVATE -Wall -Wextra)
 endif()
 
+# 基准测试（不进 ctest）
+add_executable(order_book_bench bench/bench.cpp)
+target_link_libraries(order_book_bench PRIVATE ob_core)
+
 # 测试
 enable_testing()
 
